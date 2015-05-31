@@ -48,6 +48,7 @@ import com.alibaba.dubbo.common.utils.UrlUtils;
 import com.alibaba.dubbo.registry.NotifyListener;
 import com.alibaba.dubbo.registry.support.FailbackRegistry;
 import com.alibaba.dubbo.rpc.RpcException;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 
 /**
  * RedisRegistry
@@ -156,6 +157,7 @@ public class RedisRegistry extends FailbackRegistry {
     private void deferExpired() {
         for (Map.Entry<String, JedisPool> entry : jedisPools.entrySet()) {
             JedisPool jedisPool = entry.getValue();
+            boolean isBroken = false;
             try {
                 Jedis jedis = jedisPool.getResource();
                 try {
@@ -170,11 +172,17 @@ public class RedisRegistry extends FailbackRegistry {
                     if (admin) {
                         clean(jedis);
                     }
-                    if (! replicate) {
-                    	break;//  如果服务器端已同步数据，只需写入单台机器
+                    if (!replicate) {
+                        break;//  如果服务器端已同步数据，只需写入单台机器
                     }
+                } catch (JedisConnectionException e){
+                    isBroken = true;
                 } finally {
-                    jedisPool.returnResource(jedis);
+                    if(isBroken){
+                        jedisPool.returnBrokenResource(jedis);
+                    } else {
+                        jedisPool.returnResource(jedis);
+                    }
                 }
             } catch (Throwable t) {
                 logger.warn("Failed to write provider heartbeat to redis registry. registry: " + entry.getKey() + ", cause: " + t.getMessage(), t);
@@ -214,16 +222,20 @@ public class RedisRegistry extends FailbackRegistry {
 
     public boolean isAvailable() {
         for (JedisPool jedisPool : jedisPools.values()) {
+            Jedis jedis = jedisPool.getResource();
+            boolean isBroken = false;
             try {
-                Jedis jedis = jedisPool.getResource();
-                try {
-                	if (jedis.isConnected()) {
-                        return true; // 至少需单台机器可用
-                    }
-                } finally {
+                if (jedis.isConnected()) {
+                    return true; // 至少需单台机器可用
+                }
+            } catch (JedisConnectionException e) {
+                isBroken = true;
+            } finally {
+                if (isBroken) {
+                    jedisPool.returnBrokenResource(jedis);
+                } else {
                     jedisPool.returnResource(jedis);
                 }
-            } catch (Throwable t) {
             }
         }
         return false;
@@ -265,6 +277,7 @@ public class RedisRegistry extends FailbackRegistry {
             JedisPool jedisPool = entry.getValue();
             try {
                 Jedis jedis = jedisPool.getResource();
+                boolean isBroken = false;
                 try {
                     jedis.hset(key, value, expire);
                     jedis.publish(key, Constants.REGISTER);
@@ -272,8 +285,14 @@ public class RedisRegistry extends FailbackRegistry {
                     if (! replicate) {
                     	break; //  如果服务器端已同步数据，只需写入单台机器
                     }
+                } catch (JedisConnectionException e){
+                    isBroken = true;
                 } finally {
-                    jedisPool.returnResource(jedis);
+                    if(isBroken){
+                        jedisPool.returnBrokenResource(jedis);
+                    } else {
+                        jedisPool.returnResource(jedis);
+                    }
                 }
             } catch (Throwable t) {
                 exception = new RpcException("Failed to register service to redis registry. registry: " + entry.getKey() + ", service: " + url + ", cause: " + t.getMessage(), t);
@@ -298,6 +317,7 @@ public class RedisRegistry extends FailbackRegistry {
             JedisPool jedisPool = entry.getValue();
             try {
                 Jedis jedis = jedisPool.getResource();
+                boolean isBroken = false;
                 try {
                     jedis.hdel(key, value);
                     jedis.publish(key, Constants.UNREGISTER);
@@ -305,8 +325,14 @@ public class RedisRegistry extends FailbackRegistry {
                     if (! replicate) {
                     	break; //  如果服务器端已同步数据，只需写入单台机器
                     }
+                } catch (JedisConnectionException e){
+                    isBroken = true;
                 } finally {
-                    jedisPool.returnResource(jedis);
+                    if(isBroken){
+                        jedisPool.returnBrokenResource(jedis);
+                    } else {
+                        jedisPool.returnResource(jedis);
+                    }
                 }
             } catch (Throwable t) {
                 exception = new RpcException("Failed to unregister service to redis registry. registry: " + entry.getKey() + ", service: " + url + ", cause: " + t.getMessage(), t);
@@ -339,6 +365,7 @@ public class RedisRegistry extends FailbackRegistry {
             JedisPool jedisPool = entry.getValue();
             try {
                 Jedis jedis = jedisPool.getResource();
+                boolean isBroken = false;
                 try {
                     if (service.endsWith(Constants.ANY_VALUE)) {
                         admin = true;
@@ -363,8 +390,14 @@ public class RedisRegistry extends FailbackRegistry {
                     }
                     success = true;
                     break; // 只需读一个服务器的数据
+                } catch (JedisConnectionException e){
+                    isBroken = true;
                 } finally {
-                    jedisPool.returnResource(jedis);
+                    if(isBroken){
+                        jedisPool.returnBrokenResource(jedis);
+                    } else {
+                        jedisPool.returnResource(jedis);
+                    }
                 }
             } catch(Throwable t) { // 尝试下一个服务器
                 exception = new RpcException("Failed to subscribe service from redis registry. registry: " + entry.getKey() + ", service: " + url + ", cause: " + t.getMessage(), t);
@@ -486,10 +519,17 @@ public class RedisRegistry extends FailbackRegistry {
                     || msg.equals(Constants.UNREGISTER)) {
                 try {
                     Jedis jedis = jedisPool.getResource();
+                    boolean isBroken = false;
                     try {
                         doNotify(jedis, key);
+                    } catch (JedisConnectionException e){
+                        isBroken = true;
                     } finally {
-                        jedisPool.returnResource(jedis);
+                        if(isBroken){
+                            jedisPool.returnBrokenResource(jedis);
+                        } else {
+                            jedisPool.returnResource(jedis);
+                        }
                     }
                 } catch (Throwable t) { // TODO 通知失败没有恢复机制保障
                     logger.error(t.getMessage(), t);

@@ -15,12 +15,22 @@
  */
 package com.alibaba.dubbo.registry.redis;
 
+import com.alibaba.dubbo.common.utils.NetUtils;
+import com.alibaba.dubbo.common.utils.StringUtils;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.alibaba.dubbo.common.URL;
 import com.alibaba.dubbo.registry.NotifyListener;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * RedisRegistryTest
@@ -30,11 +40,11 @@ import com.alibaba.dubbo.registry.NotifyListener;
 public class RedisRegistryTest {
 
     String            service     = "com.alibaba.dubbo.test.injvmServie";
-    URL               registryUrl = URL.valueOf("redis://239.255.255.255/");
+    URL               registryUrl = URL.valueOf("redis://127.0.0.1/");
     URL               serviceUrl  = URL.valueOf("redis://redis/" + service
                                                 + "?notify=false&methods=test1,test2");
     URL               consumerUrl = URL.valueOf("redis://consumer/" + service + "?notify=false&methods=test1,test2");
-    // RedisRegistry registry    = new RedisRegistry(registryUrl);
+     RedisRegistry registry    = new RedisRegistry(registryUrl);
 
     /**
      * @throws java.lang.Exception
@@ -69,6 +79,56 @@ public class RedisRegistryTest {
         registered = registry.getRegistered(service);
         assertEquals(1, registered.size());*/
     }
+
+    @Test
+    public void testRegister1() {
+
+        for (int i = 0; i < 1000; i++) {
+            String serviceTmp = service + i;
+            URL serviceUrl  = URL.valueOf("redis://redis/" + serviceTmp
+                    + "?notify=false&methods=test1,test2");
+            registry.register(serviceUrl);
+        }
+
+        Set<URL> registered = registry.getRegistered();
+        assertEquals(1000, registered.size());
+    }
+
+
+    @Test
+    public void testOnlyOnce(){
+        for (int i = 0; i < 2; i++) {
+            registry.register(serviceUrl);
+        }
+        Set<URL> registered = registry.getRegistered();
+        assertTrue(registered.contains(serviceUrl));
+        // confirm only 1 regist success;
+        assertEquals(1, registered.size());
+    }
+
+
+    @Test
+    public void testSubscribe1(){
+        final String subscribearg = "arg1=1&arg2=2";
+        final String localIp =  NetUtils.getLocalHost();
+        final AtomicReference<Map<String, String>> args = new AtomicReference<Map<String, String>>();
+        URL url = new URL("dubbo", localIp, 0, StringUtils.parseQueryString(subscribearg));
+        registry.subscribe(url, new NotifyListener() {
+            @Override
+            public void notify(List<URL> urls) {
+                args.set(urls.get(0).getParameters());
+            }
+        });
+        Map<URL, Set<NotifyListener>> subscribed = registry.getSubscribed();
+        assertEquals(1, subscribed.size());
+
+        Set<NotifyListener> notifyListeners = subscribed.get(url);
+        assertEquals(1, notifyListeners.size());
+
+//        assertEquals(subscribearg, StringUtils.toQueryString(subscribed));
+    }
+
+
 
     /**
      * Test method for
